@@ -1,0 +1,8 @@
+{
+  "name": "Mental Stress & Emotional Drift Analyzer",
+  "description": "B.Tech Capstone Project dashboard for detecting mental stress, emotional drift, and triggers from text, audio, and screenshots using multimodal NLP.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
