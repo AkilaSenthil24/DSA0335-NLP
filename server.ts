@@ -39,44 +39,37 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-function getGeminiClient(): GoogleGenAI {
-  let key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    try {
-      const envPath = path.resolve(process.cwd(), ".env");
-      if (fs.existsSync(envPath)) {
-        const lines = fs.readFileSync(envPath, "utf-8").split(/\r?\n/);
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
-          const firstEqual = trimmed.indexOf("=");
-          const keyStr = trimmed.substring(0, firstEqual).trim();
-          const valStr = trimmed.substring(firstEqual + 1).trim();
-          if (keyStr === "GEMINI_API_KEY") {
-            key = valStr.replace(/^["']|["']$/g, "").trim();
-            break;
-          }
+function getApiKey(): string {
+  let key = "";
+  try {
+    const envPath = path.resolve(process.cwd(), ".env");
+    if (fs.existsSync(envPath)) {
+      const lines = fs.readFileSync(envPath, "utf-8").split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+        const firstEqual = trimmed.indexOf("=");
+        const keyStr = trimmed.substring(0, firstEqual).trim();
+        const valStr = trimmed.substring(firstEqual + 1).trim();
+        if (keyStr === "GEMINI_API_KEY") {
+          key = valStr.replace(/^["']|["']$/g, "").trim();
+          break;
         }
       }
-    } catch (e) {
-      console.error("Dynamic .env read failed:", e);
     }
+  } catch (e) {
+    console.error("Dynamic .env read failed:", e);
+  }
+
+  if (!key) {
+    key = process.env.GEMINI_API_KEY || "";
   }
 
   const finalKey = key || manualKey;
   if (!finalKey) {
     throw new Error("GEMINI_API_KEY is empty. Please set it in Settings > Secrets or the .env file.");
   }
-
-  const cleanKey = finalKey.replace(/^["']|["']$/g, "").trim();
-  return new GoogleGenAI({
-    apiKey: cleanKey,
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
-    },
-  });
+  return finalKey.replace(/^["']|["']$/g, "").trim();
 }
 
 // NLP Analysis API Endpoint
@@ -108,7 +101,7 @@ app.post("/api/analyze", async (req, res) => {
   try {
     const { text, fileBase64, mimeType, fileType } = req.body;
 
-    const ai = getGeminiClient();
+    const apiKey = getApiKey();
 
     let parts: any[] = [];
     let promptText = "";
@@ -163,113 +156,145 @@ app.post("/api/analyze", async (req, res) => {
 
     parts.push({ text: promptText });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: { parts },
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
+    const responseSchema = {
+      type: "OBJECT",
+      properties: {
+        extractedText: {
+          type: "STRING",
+          description: "Full dialogue transcribed from speech, OCR-extracted from image, or original text input.",
+        },
+        preprocessedText: {
+          type: "STRING",
+          description: "Linguistic preprocessed text format, lowcase, essential tokens only, representing key emotional highlights.",
+        },
+        sentiment: {
+          type: "OBJECT",
           properties: {
-            extractedText: {
-              type: Type.STRING,
-              description: "Full dialogue transcribed from speech, OCR-extracted from image, or original text input.",
-            },
-            preprocessedText: {
-              type: Type.STRING,
-              description: "Linguistic preprocessed text format, lowcase, essential tokens only, representing key emotional highlights.",
-            },
-            sentiment: {
-              type: Type.OBJECT,
-              properties: {
-                polarity: { type: Type.NUMBER, description: "Calculated sentiment polarity from -1.0 to 1.0." },
-                label: { type: Type.STRING, description: "One of 'Positive', 'Neutral', or 'Negative'." },
-                trend: {
-                  type: Type.ARRAY,
-                  items: { type: Type.NUMBER },
-                  description: "Exactly 5 numbers representing sentiment scores along the timeline from -1.0 to +1.0.",
-                },
-              },
-              required: ["polarity", "label", "trend"],
-            },
-            stressScore: { type: Type.INTEGER, description: "Calculated stress score from 0 to 100." },
-            riskLevel: { type: Type.STRING, description: "Must be 'Low', 'Moderate', or 'High'." },
-            healthScore: { type: Type.INTEGER, description: "Calculated dialogue health score from 0 to 100." },
-            dominantEmotion: { type: Type.STRING, description: "The single primary dominant emotion word." },
-            emotions: {
-              type: Type.OBJECT,
-              properties: {
-                joy: { type: Type.INTEGER, description: "Joy value 0-100." },
-                sadness: { type: Type.INTEGER, description: "Sadness value 0-100." },
-                anger: { type: Type.INTEGER, description: "Anger value 0-100." },
-                fear: { type: Type.INTEGER, description: "Fear value 0-100." },
-                surprise: { type: Type.INTEGER, description: "Surprise value 0-100." },
-              },
-              required: ["joy", "sadness", "anger", "fear", "surprise"],
-            },
-            triggers: {
-              type: Type.OBJECT,
-              properties: {
-                exams: { type: Type.BOOLEAN, description: "Academic exams mentioned as trigger." },
-                projectDeadlines: { type: Type.BOOLEAN, description: "Academic deadlines or assignments mentioned as trigger." },
-                financialIssues: { type: Type.BOOLEAN, description: "Financial troubles, costs, loans or tuition issues." },
-                familyIssues: { type: Type.BOOLEAN, description: "Family issues, pressure, household arguments." },
-                relationshipIssues: { type: Type.BOOLEAN, description: "Breakups, relationship strain, friendships conflict." },
-                evidence: { type: Type.STRING, description: "Direct visual text matching the identified triggers." },
-              },
-              required: ["exams", "projectDeadlines", "financialIssues", "familyIssues", "relationshipIssues", "evidence"],
-            },
-            driftTimeline: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  segment: { type: Type.STRING, description: "Dialogue section stage name (e.g. 'Segment 1')" },
-                  emotion: { type: Type.STRING, description: "Dominant emotion in this segment." },
-                  stressScore: { type: Type.INTEGER, description: "Stress score 0-100 in this segment." },
-                  sentimentScore: { type: Type.INTEGER, description: "Sentiment score -100 to +100 in this segment." },
-                },
-                required: ["segment", "emotion", "stressScore", "sentimentScore"],
-              },
-            },
-            wordCloud: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  text: { type: Type.STRING },
-                  value: { type: Type.INTEGER },
-                },
-                required: ["text", "value"],
-              },
-              description: "10 to 15 key visual tags and emotion tokens showing NLP word frequency weights.",
-            },
-            wellnessSuggestions: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: "Exactly 3 customized mental wellness tips and stress management advice.",
+            polarity: { type: "NUMBER", description: "Calculated sentiment polarity from -1.0 to 1.0." },
+            label: { type: "STRING", description: "One of 'Positive', 'Neutral', or 'Negative'." },
+            trend: {
+              type: "ARRAY",
+              items: { type: "NUMBER" },
+              description: "Exactly 5 numbers representing sentiment scores along the timeline from -1.0 to +1.0.",
             },
           },
-          required: [
-            "extractedText",
-            "preprocessedText",
-            "sentiment",
-            "stressScore",
-            "riskLevel",
-            "healthScore",
-            "dominantEmotion",
-            "emotions",
-            "triggers",
-            "driftTimeline",
-            "wordCloud",
-            "wellnessSuggestions",
-          ],
+          required: ["polarity", "label", "trend"],
+        },
+        stressScore: { type: "INTEGER", description: "Calculated stress score from 0 to 100." },
+        riskLevel: { type: "STRING", description: "Must be 'Low', 'Moderate', or 'High'." },
+        healthScore: { type: "INTEGER", description: "Calculated dialogue health score from 0 to 100." },
+        dominantEmotion: { type: "STRING", description: "The single primary dominant emotion word." },
+        emotions: {
+          type: "OBJECT",
+          properties: {
+            joy: { type: "INTEGER", description: "Joy value 0-100." },
+            sadness: { type: "INTEGER", description: "Sadness value 0-100." },
+            anger: { type: "INTEGER", description: "Anger value 0-100." },
+            fear: { type: "INTEGER", description: "Fear value 0-100." },
+            surprise: { type: "INTEGER", description: "Surprise value 0-100." },
+          },
+          required: ["joy", "sadness", "anger", "fear", "surprise"],
+        },
+        triggers: {
+          type: "OBJECT",
+          properties: {
+            exams: { type: "BOOLEAN", description: "Academic exams mentioned as trigger." },
+            projectDeadlines: { type: "BOOLEAN", description: "Academic deadlines or assignments mentioned as trigger." },
+            financialIssues: { type: "BOOLEAN", description: "Financial troubles, costs, loans or tuition issues." },
+            familyIssues: { type: "BOOLEAN", description: "Family issues, pressure, household arguments." },
+            relationshipIssues: { type: "BOOLEAN", description: "Breakups, relationship strain, friendships conflict." },
+            evidence: { type: "STRING", description: "Direct visual text matching the identified triggers." },
+          },
+          required: ["exams", "projectDeadlines", "financialIssues", "familyIssues", "relationshipIssues", "evidence"],
+        },
+        driftTimeline: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              segment: { type: "STRING", description: "Dialogue section stage name (e.g. 'Segment 1')" },
+              emotion: { type: "STRING", description: "Dominant emotion in this segment." },
+              stressScore: { type: "INTEGER", description: "Stress score 0-100 in this segment." },
+              sentimentScore: { type: "INTEGER", description: "Sentiment score -100 to +100 in this segment." },
+            },
+            required: ["segment", "emotion", "stressScore", "sentimentScore"],
+          },
+        },
+        wordCloud: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              text: { type: "STRING" },
+              value: { type: "INTEGER" },
+            },
+            required: ["text", "value"],
+          },
+          description: "10 to 15 key visual tags and emotion tokens showing NLP word frequency weights.",
+        },
+        wellnessSuggestions: {
+          type: "ARRAY",
+          items: { type: "STRING" },
+          description: "Exactly 3 customized mental wellness tips and stress management advice.",
         },
       },
+      required: [
+        "extractedText",
+        "preprocessedText",
+        "sentiment",
+        "stressScore",
+        "riskLevel",
+        "healthScore",
+        "dominantEmotion",
+        "emotions",
+        "triggers",
+        "driftTimeline",
+        "wordCloud",
+        "wellnessSuggestions",
+      ],
+    };
+
+    const requestBody = {
+      contents: [
+        {
+          parts: parts
+        }
+      ],
+      systemInstruction: {
+        parts: [
+          {
+            text: systemInstruction
+          }
+        ]
+      },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: responseSchema
+      }
+    };
+
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`;
+
+    const apiResponse = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody)
     });
 
-    const outputJson = JSON.parse(response.text?.trim() || "{}");
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text();
+      throw new Error(`Gemini remote API error (${apiResponse.status}): ${errorText}`);
+    }
+
+    const resJson = await apiResponse.json();
+    const candidateText = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!candidateText) {
+      throw new Error("No output generated from Gemini model.");
+    }
+
+    const outputJson = JSON.parse(candidateText.trim());
     res.json(outputJson);
   } catch (err: any) {
     console.error("API Error during analysis:", err);
