@@ -16,10 +16,16 @@ let manualKey = "";
 try {
   const envPath = path.resolve(process.cwd(), ".env");
   if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, "utf-8");
-    const match = content.match(/GEMINI_API_KEY\s*=\s*(["']?)(.*?)\1(\r?\n|$)/);
-    if (match && match[2]) {
-      manualKey = match[2].trim();
+    const lines = fs.readFileSync(envPath, "utf-8").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+      const firstEqual = trimmed.indexOf("=");
+      const keyStr = trimmed.substring(0, firstEqual).trim();
+      const valStr = trimmed.substring(firstEqual + 1).trim();
+      if (keyStr === "GEMINI_API_KEY") {
+        manualKey = valStr.replace(/^["']|["']$/g, "").trim();
+      }
     }
   }
 } catch (e) {
@@ -33,27 +39,71 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY || manualKey;
-    if (!key) {
-      throw new Error("GEMINI_API_KEY is empty. Please set it in Settings > Secrets or the .env file.");
+  let key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    try {
+      const envPath = path.resolve(process.cwd(), ".env");
+      if (fs.existsSync(envPath)) {
+        const lines = fs.readFileSync(envPath, "utf-8").split(/\r?\n/);
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+          const firstEqual = trimmed.indexOf("=");
+          const keyStr = trimmed.substring(0, firstEqual).trim();
+          const valStr = trimmed.substring(firstEqual + 1).trim();
+          if (keyStr === "GEMINI_API_KEY") {
+            key = valStr.replace(/^["']|["']$/g, "").trim();
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Dynamic .env read failed:", e);
     }
-    const cleanKey = key.replace(/^["']|["']$/g, "").trim();
-    aiClient = new GoogleGenAI({
-      apiKey: cleanKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
   }
-  return aiClient;
+
+  const finalKey = key || manualKey;
+  if (!finalKey) {
+    throw new Error("GEMINI_API_KEY is empty. Please set it in Settings > Secrets or the .env file.");
+  }
+
+  const cleanKey = finalKey.replace(/^["']|["']$/g, "").trim();
+  return new GoogleGenAI({
+    apiKey: cleanKey,
+    httpOptions: {
+      headers: {
+        "User-Agent": "aistudio-build",
+      },
+    },
+  });
 }
 
 // NLP Analysis API Endpoint
+app.get("/api/debug-env", (req, res) => {
+  try {
+    const envKey = process.env.GEMINI_API_KEY;
+    const envPath = path.resolve(process.cwd(), ".env");
+    const dotEnvFileExists = fs.existsSync(envPath);
+    let dotEnvFileLines: string[] = [];
+    if (dotEnvFileExists) {
+      const content = fs.readFileSync(envPath, "utf-8");
+      dotEnvFileLines = content.split("\n").map(l => l.split("=")[0].trim());
+    }
+    res.json({
+      envKeyLength: envKey ? envKey.length : 0,
+      envKeyExists: !!envKey,
+      manualKeyLength: manualKey ? manualKey.length : 0,
+      dotEnvFileExists,
+      dotEnvFileLines,
+      nodeEnv: process.env.NODE_ENV,
+      cwd: process.cwd()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/analyze", async (req, res) => {
   try {
     const { text, fileBase64, mimeType, fileType } = req.body;
