@@ -5,11 +5,26 @@
 
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
-dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+
+let manualKey = "";
+try {
+  const envPath = path.resolve(process.cwd(), ".env");
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, "utf-8");
+    const match = content.match(/GEMINI_API_KEY\s*=\s*(["']?)(.*?)\1(\r?\n|$)/);
+    if (match && match[2]) {
+      manualKey = match[2].trim();
+    }
+  }
+} catch (e) {
+  console.error("Manual .env parse failed:", e);
+}
 
 const app = express();
 const PORT = 3000;
@@ -21,12 +36,13 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
   if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY;
+    const key = process.env.GEMINI_API_KEY || manualKey;
     if (!key) {
-      throw new Error("GEMINI_API_KEY is not defined. Please add it in Settings > Secrets.");
+      throw new Error("GEMINI_API_KEY is empty. Please set it in Settings > Secrets or the .env file.");
     }
+    const cleanKey = key.replace(/^["']|["']$/g, "").trim();
     aiClient = new GoogleGenAI({
-      apiKey: key,
+      apiKey: cleanKey,
       httpOptions: {
         headers: {
           "User-Agent": "aistudio-build",
